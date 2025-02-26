@@ -4,14 +4,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import matplotlib as mpl
-from typing import List, Union, NamedTuple, Optional
+from typing import List, Union, NamedTuple, Optional, Dict, Set
 from typeguard import typechecked
+from dataclasses import dataclass
 
 plt.rcParams['font.sans-serif'] = ['SimHei', 'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Microsoft YaHei', 'SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
-
-def erode_polygon(polygon, width):
+def erode_polygon_list(polygon: Polygon, width: float) -> List[Polygon]:
     """
     对多边形进行向内腐蚀处理
     
@@ -25,10 +25,32 @@ def erode_polygon(polygon, width):
     # 使用buffer实现腐蚀效果
     eroded_polygon = polygon.buffer(-width)
     
-    return eroded_polygon
+    if eroded_polygon.is_empty or not eroded_polygon.is_valid:
+        return []
+    
+    if isinstance(eroded_polygon, MultiPolygon):
+        return list(eroded_polygon.geoms)
+    assert isinstance(eroded_polygon, Polygon), f"eroded_polygon is not a Polygon: {type(eroded_polygon)}"
+    
+    return [eroded_polygon]
+
+def eroded_and_guarenteed_width(polygon: Polygon, width: float) -> List[Polygon]:
+    """
+    对多边形进行向内腐蚀处理后，再进行一次开运算
+    """
+    eroded_polygon = polygon.buffer(-width).buffer(-width / 2.0).buffer(width / 2.0)
+
+    if eroded_polygon.is_empty or not eroded_polygon.is_valid:
+        return []
+    
+    if isinstance(eroded_polygon, MultiPolygon):
+        return list(eroded_polygon.geoms)
+    assert isinstance(eroded_polygon, Polygon), f"eroded_polygon is not a Polygon: {type(eroded_polygon)}"
+    
+    return [eroded_polygon]
 
 @typechecked
-def get_eroded_polygons(polygon, width, max_num_layers: Union[int, None] = 21) -> List[Polygon]:
+def get_eroded_polygons(polygon: Polygon, width: float, max_num_layers: Union[int, None] = 21) -> List[Union[Polygon, MultiPolygon]]:
     """
     生成多层腐蚀的多边形序列
     
@@ -45,23 +67,17 @@ def get_eroded_polygons(polygon, width, max_num_layers: Union[int, None] = 21) -
     i = 0
     while max_num_layers is None or i < max_num_layers:
         # 对最后一个多边形进行腐蚀
-        eroded = erode_polygon(eroded_polygons[-1], width)
-        
-        # 如果腐蚀结果为空或无效，停止腐蚀
+        eroded = polygon.buffer(-width)
         if eroded.is_empty or not eroded.is_valid:
             break
-            
-        # 如果腐蚀后的面积太小，停止腐蚀
-        if eroded.area < polygon.area * 0.01:  # 面积小于原始面积的1%
-            break
-            
         eroded_polygons.append(eroded)
+        
         i += 1
     
     return eroded_polygons
 
 
-def quick_plot(geometry: Union[Polygon, MultiPolygon], color='blue', alpha=0.3, title='Polygon Visualization',  
+def quick_plot(geometry: List[Union[Polygon, MultiPolygon]], color='blue', alpha=0.3, title='Polygon Visualization',  
                ax=None, show=True, label=None):
     """
     快速绘制 Shapely 的 Polygon 或 MultiPolygon 对象，并标注顶点编号
@@ -102,15 +118,16 @@ def quick_plot(geometry: Union[Polygon, MultiPolygon], color='blue', alpha=0.3, 
                 ax.text(xi, yi, f'h{i}', fontsize=10, 
                        bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
     
-    if isinstance(geometry, Polygon):
-        plot_polygon_with_numbers(geometry)
-    else:  # MultiPolygon
-        for i, poly in enumerate(geometry.geoms):
+    for poly in geometry:
+        if isinstance(poly, Polygon):
             plot_polygon_with_numbers(poly)
-            # 在每个多边形的中心添加多边形编号
-            centroid = poly.centroid
+        else:  # MultiPolygon
+            for i, poly in enumerate(poly.geoms):
+                plot_polygon_with_numbers(poly)
+                # 在每个多边形的中心添加多边形编号
+                centroid = poly.centroid
             ax.text(centroid.x, centroid.y, f'Poly{i}', fontsize=12, 
-                   bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
     
     ax.set_aspect('equal')
     ax.grid(True)
@@ -148,7 +165,7 @@ def plot_multiple_erosion_layers(polygon, widths, colors=None, alphas=None):
     # 存储所有腐蚀后的多边形
     eroded_polygons = [polygon]  # 从原始多边形开始
     for width in widths:
-        eroded = erode_polygon(eroded_polygons[-1], width)
+        eroded = polygon.buffer(-width)
         if not eroded.is_empty and eroded.is_valid:
             eroded_polygons.append(eroded)
         else:
@@ -197,7 +214,7 @@ def find_points_at_distance_from_line(line: LineString, point: Point, width: flo
 @typechecked
 def find_point_at_distance(polygon: Polygon, width: float) -> tuple[Point, int]:
     """
-    在多边形边界上查找距离0号顶点指定距离的点
+    在多边形边界上查找距离0号顶点指定距离的点. Polygon 类型 -1 和 0 原来是同一个点，这里保证删除了重复的0点
     
     参数:
     polygon: 输入的多边形
@@ -206,7 +223,7 @@ def find_point_at_distance(polygon: Polygon, width: float) -> tuple[Point, int]:
     返回:
     tuple: ((x, y), edge_index)
         - (x, y): 找到的点的坐标
-        - edge_index: 点所在的边的索引（从0开始）
+        - edge_index: 点所在的边的索引（从0开始）. edge_index - 1 -> edge_index 这条边是非法的
     """
     # 排除重复的最后一个点
     coords = list(polygon.exterior.coords)[0:-1]
@@ -227,18 +244,18 @@ def find_point_at_distance(polygon: Polygon, width: float) -> tuple[Point, int]:
                 
         if points_at_width:
             point = min(points_at_width, key=lambda x: x.distance(start))
-            return point, i
+            return point, len(coords) + i
             
     raise ValueError(f"找不到距离为 {width} 的点")
 
 @typechecked
-def find_nearest_point_on_exterior(point: Point, ext_polygon: Polygon) -> tuple[Point, int, float]:
+def find_nearest_point_on_exterior(point: Point, ext_cut: LineString) -> tuple[Point, int, float]:
     """
     找到点在外部多边形上的最近点及其所在边的末端点编号
     
     参数:
     point: 待检查的点
-    ext_polygon: 外部多边形
+    ext_cut: 外部多边形
     
     返回:
     tuple: (nearest_point, edge_end_idx, distance)
@@ -246,15 +263,14 @@ def find_nearest_point_on_exterior(point: Point, ext_polygon: Polygon) -> tuple[
         - edge_end_idx: 最近点所在边的末端点编号
         - distance: 最近点到边末端点的距离
     """
-    coords = list(ext_polygon.exterior.coords)[:-1]
     min_dist = float('inf')
     nearest_point = None
     edge_end_idx = -1
     dist_to_end = 0
     
-    for i in range(len(coords)):
-        start = Point(coords[i])
-        end = Point(coords[(i+1) % len(coords)])
+    for i in range(len(ext_cut.coords) - 1):
+        start = Point(ext_cut.coords[i])
+        end = Point(ext_cut.coords[(i+1)])
         edge = LineString([start, end])
         
         curr_nearest = nearest_points(point, edge)[1]
@@ -263,7 +279,7 @@ def find_nearest_point_on_exterior(point: Point, ext_polygon: Polygon) -> tuple[
         if dist < min_dist:
             min_dist = dist
             nearest_point = curr_nearest
-            edge_end_idx = (i+1) % len(coords)
+            edge_end_idx = i+1
             dist_to_end = curr_nearest.distance(end)
             
     return nearest_point, edge_end_idx, dist_to_end
@@ -275,9 +291,9 @@ class FromEnd(NamedTuple):
 class FromMid(NamedTuple):
     """从内部多边形中间点创建的新多边形"""
     polygon: Polygon
-    edge_end_idx: int
-    nearest_point: Point
-    dist_to_end: float
+    pt_i_nearest_edge_end_idx: int  # 最近点所在外部多边形边的终点索引
+    pt_i_nearest: Point  # 最近点
+    dist_to_end: float  # 最近点到边末端点的距离
 
 PolygonInfo = Union[FromEnd, FromMid]
 
@@ -318,8 +334,8 @@ def check_intersection_excluding_endpoints(line: LineString, polygon_boundary: L
     return False
 
 @typechecked
-def find_nearest_point_and_create_polygon(ext: Polygon, interior: Union[Polygon, MultiPolygon], width: float, 
-                                        tolerance: float = 1e-10) -> tuple[int, Point, List[PolygonInfo]]:
+def find_nearest_point_and_create_polygon(ext: Polygon, interior: List[Polygon], width: float, 
+                                        tolerance: float = 1e-10) -> tuple[int, LineString, List[PolygonInfo]]:
     """
     在外部多边形上找到距离0号顶点width距离的点pt1，然后根据条件创建新的多边形
     
@@ -330,26 +346,26 @@ def find_nearest_point_and_create_polygon(ext: Polygon, interior: Union[Polygon,
     tolerance: 距离比较时的容差
     
     返回:
-    tuple: (end_idx, pt1, polygon_infos)
+    tuple: (end_idx, ext_cut, polygon_infos)
         - end_idx: 外部裁剪后的end_idx
-        - pt1: 外部裁剪后的最后一个点
+        - ext_cut: 外部裁剪结果
         - polygon_infos: 新创建的多边形信息列表，每个元素可能是:
             - FromEnd: 从端点创建的新多边形
             - FromMid: 从中间点创建的新多边形，包含额外的外部多边形信息
     """
     # 找到外部多边形上距离0号顶点width距离的点
-    pt1, ed_idx = find_point_at_distance(ext, width)
-    
-    # 将interior转换为多边形列表
-    interior_polygons = list(interior.geoms) if isinstance(interior, MultiPolygon) else [interior]
+    pt1, end_idx = find_point_at_distance(ext, width)
+    assert end_idx > 0
+    # is a LineString
+    ext_cut = LineString(list(ext.exterior.coords)[:end_idx] + [pt1])
     
     # 存储所有创建的多边形信息
     polygon_infos: List[PolygonInfo] = []
     
-    for curr_interior in interior_polygons:
+    for curr_interior in interior:
         int_coords = list(curr_interior.exterior.coords)[:-1]
         
-        # 找到距离pt1最近的边上的点
+        # 找到距离pt1最近的点
         min_dist = float('inf')
         nearest_edge_start = 0
         nearest_point = None
@@ -366,38 +382,44 @@ def find_nearest_point_and_create_polygon(ext: Polygon, interior: Union[Polygon,
                 nearest_edge_start = i
                 nearest_point = curr_nearest
         
-        # 检查最近点是否 FromEnd 满足条件
+        # 检查是否需要使用FromMid逻辑
         connection_line = LineString([pt1, nearest_point])
-        if (min_dist > width + tolerance or 
-            check_intersection_excluding_endpoints(connection_line, ext.exterior)):
-            # 需要检查所有顶点
+        if min_dist > width + tolerance or check_intersection_excluding_endpoints(connection_line, ext_cut):
+            # 遍历内部多边形的端点，找到最优的外部多边形最近点
             vertex_nearest_info = []
             
             for i, coord in enumerate(int_coords):
                 pt_i = Point(coord)
-                pt_i_nearest, edge_end_idx, dist_to_end = find_nearest_point_on_exterior(pt_i, ext)
-                vertex_nearest_info.append((pt_i, pt_i_nearest, edge_end_idx, dist_to_end, i))
+                pt_i_nearest, pt_i_nearest_edge_end_idx, dist_i = find_nearest_point_on_exterior(pt_i, ext_cut)
+                assert pt_i_nearest_edge_end_idx < len(ext_cut.coords)
+                vertex_nearest_info.append((pt_i, pt_i_nearest, pt_i_nearest_edge_end_idx, dist_i, i))
             
-            # 按照edge_end_idx降序和dist_to_end升序排序
+            # 按照pt_i_nearest_edge_end_idx降序和dist_i升序排序
             vertex_nearest_info.sort(key=lambda x: (-x[2], x[3]))
             best_info = vertex_nearest_info[0]
-            
-            # 创建从端点的新多边形
-            start_point = best_info[0]
+            pt_i = best_info[0]
+            pt_i_nearest = best_info[1]
+            pt_i_nearest_edge_end_idx = best_info[2]
+            dist_to_end = best_info[3]
             vertex_idx = best_info[4]
             
-            # 创建新的顶点序列
-            new_coords = [start_point]
+            # 创建新的顶点序列，从pt_i开始
+            new_coords = [pt_i]
             for i in range(vertex_idx + 1, len(int_coords)):
                 new_coords.append(Point(int_coords[i]))
             for i in range(0, vertex_idx):
                 new_coords.append(Point(int_coords[i]))
-            new_coords.append(start_point)
+            new_coords.append(pt_i)
             
             new_polygon = Polygon([(p.x, p.y) for p in new_coords])
-            polygon_infos.append(FromEnd(polygon=new_polygon))
+            polygon_infos.append(FromMid(
+                polygon=new_polygon,
+                pt_i_nearest_edge_end_idx=pt_i_nearest_edge_end_idx,
+                pt_i_nearest=pt_i_nearest,
+                dist_to_end=dist_to_end,
+            ))
         else:
-            # 创建从中间点的新多边形
+            # 使用FromEnd逻辑
             new_coords = [nearest_point]
             for i in range(nearest_edge_start + 1, len(int_coords)):
                 new_coords.append(Point(int_coords[i]))
@@ -406,107 +428,148 @@ def find_nearest_point_and_create_polygon(ext: Polygon, interior: Union[Polygon,
             new_coords.append(nearest_point)
             
             new_polygon = Polygon([(p.x, p.y) for p in new_coords])
-            polygon_infos.append(FromMid(polygon=new_polygon, edge_end_idx=ed_idx, nearest_point=pt1, dist_to_end=dist_to_end))
+            polygon_infos.append(FromEnd(polygon=new_polygon))
     
-    return ed_idx, pt1, polygon_infos
+    return end_idx, ext_cut, polygon_infos
 
-class SpiralNode(NamedTuple):
-    """表示盘旋图中的一个节点"""
-    points: List[Point]  # 从0号点到最后一个点的链
-    children: List['SpiralNode']  # 子节点列表
+def visualize_polygon_creation(ext: Polygon, interior: Union[Polygon, MultiPolygon], 
+                             end_idx: int, ext_cut: LineString, polygon_infos: List[PolygonInfo]):
+    """
+    可视化多边形创建的结果
+    
+    参数:
+    ext: 外部多边形
+    interior: 内部多边形或多边形集合
+    end_idx: 外部裁剪后的end_idx
+    ext_cut: 外部裁剪结果
+    polygon_infos: 新创建的多边形信息列表
+    """
+    fig, ax = plt.subplots(figsize=(12, 12))
+    
+    # 绘制外部多边形
+    quick_plot(ext, color='blue', alpha=0.2, ax=ax, show=False, label='外部多边形')
+    
+    # 绘制pt1点
+    ax.plot(ext_cut.coords[-1][0], ext_cut.coords[-1][1], 'go', markersize=10, label='pt1')
+    
+    # 为每个新创建的多边形使用不同的颜色
+    colors = plt.cm.Set3(np.linspace(0, 1, len(polygon_infos)))
+    
+    for i, info in enumerate(polygon_infos):
+        # 绘制新创建的多边形
+        quick_plot(info.polygon, color=colors[i], alpha=0.3, ax=ax, show=False, 
+                  label=f'新多边形 {i+1}')
+        
+        if isinstance(info, FromMid):
+            # 绘制连接线
+            ax.plot([info.pt_i_nearest.x, info.polygon.exterior.xy[0][0]], 
+                   [info.pt_i_nearest.y, info.polygon.exterior.xy[1][0]], 
+                   '--', color=colors[i], linewidth=2)
+            # 标记最近点
+            ax.plot(info.pt_i_nearest.x, info.pt_i_nearest.y, 'ro', markersize=8)
+        else:
+            # 绘制连接线 from pt1
+            ax.plot([ext_cut.coords[-1][0], info.polygon.exterior.xy[0][0]],  
+                   [ext_cut.coords[-1][1], info.polygon.exterior.xy[1][0]],
+                   '--', color=colors[i], linewidth=2)
+    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    ax.set_title('多边形创建结果可视化')
+    plt.tight_layout()
+    plt.show()
+
+@dataclass
+class SpiralNode:
+    """盘旋图的树节点"""
+    point: Point
+    children: List['SpiralNode'] = None
+    
+    def __post_init__(self):
+        if self.children is None:
+            self.children = []
 
 @typechecked
-def create_spiral_tree(polygon: Polygon, width: float) -> tuple[SpiralNode, int]:
+def generate_spiral_tree(polygon: Polygon, width: float) -> tuple[Optional[SpiralNode], int]:
     """
-    生成多边形的盘旋树形图
+    生成盘旋图的树形结构
     
     参数:
     polygon: 输入的多边形
     width: 腐蚀宽度
     
     返回:
-    tuple: (root_node, end_idx)
-        - root_node: 树的根节点
-        - end_idx: 最外层多边形的end_idx
+    tuple[SpiralNode, int]: (根节点, 外层多边形的终点索引)
     """
-    def _create_node(curr_polygon: Polygon) -> tuple[Optional[SpiralNode], int]:
-        # 获取腐蚀后的多边形
-        eroded = get_eroded_polygons(curr_polygon, width, 1)
-        if len(eroded) < 2:  # 如果无法继续腐蚀
-            return None, -1
-        
-        interior_polygon = eroded[1]
-        
-        # 获取当前层的信息
-        end_idx, pt1, polygon_infos = find_nearest_point_and_create_polygon(
-            curr_polygon, interior_polygon, width
-        )
-        
-        # 创建当前多边形的点链（从0号点到pt1）
-        curr_points = []
-        coords = list(curr_polygon.exterior.coords)[:-1]  # 去掉重复的最后一个点
-        
-        # 添加从0到end_idx-1的点
-        assert end_idx <= 0, f"end_idx: {end_idx}"
-        for i in range(len(coords) + end_idx):
-            curr_points.append(Point(coords[i]))
-        curr_points.append(pt1)  # 添加pt1
-        
-        # 处理所有子节点
-        children = []
-        next_child = None  # 用于存储FromMid情况下的后续子节点
-        
-        for info in polygon_infos:
-            if isinstance(info, FromEnd):
-                # 直接连接到内部多边形的0号点
-                child_node, _ = _create_node(info.polygon)
-                if child_node is not None:
-                    children.append(child_node)
-            else:  # FromMid
-                # 创建内部多边形的节点
-                child_node, _ = _create_node(info.polygon)
-                if child_node is not None:
-                    # 保存当前点链的长度（插入点的位置）
-                    insert_idx = len(curr_points) - 1
-                    
-                    # 添加中间点
-                    curr_points.append(info.nearest_point)
-                    
-                    # 如果有后续子节点，将其添加到children中
-                    if next_child is not None:
-                        children.append(next_child)
-                    
-                    # 创建一个新的节点，包含插入点和两个子节点
-                    mid_children = []
-                    if child_node is not None:
-                        mid_children.append(child_node)  # 连向内部多边形
-                    if insert_idx < len(curr_points) - 1:
-                        # 创建一个包含剩余点的子节点
-                        remaining_points = curr_points[insert_idx+1:]
-                        if remaining_points:
-                            mid_children.append(SpiralNode(points=remaining_points, children=[]))
-                    
-                    # 更新当前点链，只保留到插入点
-                    curr_points = curr_points[:insert_idx+1]
-                    
-                    # 添加包含插入点的节点
-                    children.append(SpiralNode(
-                        points=[info.nearest_point],
-                        children=mid_children
-                    ))
-        
-        return SpiralNode(points=curr_points, children=children), end_idx
+    # 获取腐蚀后的多边形
+    eroded = eroded_and_guarenteed_width(polygon, width)
     
-    # 创建整个树
-    root_node, final_end_idx = _create_node(polygon)
-    if root_node is None:
-        raise ValueError("无法创建盘旋图")
+    # 获取外部多边形的所有顶点
     
-    return root_node, final_end_idx
+    # 获取内部多边形信息
+    end_idx, ext_cut, polygon_infos = find_nearest_point_and_create_polygon(polygon, eroded, width)
+    assert end_idx > 0, f"end_idx: {end_idx} 应该大于0"
+    
+    # 创建外部轮廓的主链
+    ext_nodes = []
+    for xy in ext_cut.coords:
+        if len(ext_nodes) == 0:
+            ext_nodes.append(SpiralNode(Point(xy)))
+        else:
+            ext_nodes.append(SpiralNode(Point(xy)))
+            ext_nodes[-2].children.append(ext_nodes[-1])
+    # 添加pt1到主链
+    
+    # 创建一个字典来存储每条边上的最近点
+    edge_points: Dict[int, List[tuple[Point, SpiralNode, float]]] = {}
+    
+    # 处理每个内部多边形
+    for info in polygon_infos:
+        if isinstance(info, FromEnd):
+            # 直接从pt1连接到内部多边形的起点
+            inner_start, _ = generate_spiral_tree(info.polygon, width)
+            if inner_start is None:
+                continue
+            ext_nodes[-1].children.append(inner_start)
+            # 递归处理内部多边形
+        else:  # FromMid
+            # 获取内部多边形的起点
+            inner_start, _ = generate_spiral_tree(info.polygon, width)
+            if inner_start is None:
+                continue
+            # 将最近点信息添加到对应的边
+            edge_end_idx = info.pt_i_nearest_edge_end_idx
+            if edge_end_idx not in edge_points:
+                edge_points[edge_end_idx] = []
+            edge_points[edge_end_idx].append((info.pt_i_nearest, inner_start, 
+                                        info.dist_to_end))
+    
+    # 处理每条边上的最近点
+    for edge_end_idx, points in edge_points.items():
+        if not points:
+            continue
+        
+        # 按照到终点的距离从大到小排序
+        points.sort(key=lambda x: x[2], reverse=True)
+        
+        # 找到起点节点（edge_idx - 1对应的节点）
+        
+        # 创建最近点的链
+        current = ext_nodes[edge_end_idx - 1]
+        for pt, inner_node, _ in points:
+            pt_node = SpiralNode(pt)
+            current.children = [pt_node]  # 替换原有的连接
+            pt_node.children.append(inner_node)  # 连接到内部多边形
+            current = pt_node
+        
+        # 连接到 endpoint
+        current.children.append(ext_nodes[edge_end_idx])
+    
+    return ext_nodes[0], end_idx
 
-def plot_spiral_tree(root: SpiralNode, ax=None, color='blue', alpha=0.3, show=True, show_numbers=False):
+
+@typechecked
+def visualize_spiral_tree(root: SpiralNode, ax=None, color='blue', alpha=0.3, show=True):
     """
-    绘制盘旋树形图
+    可视化盘旋树
     
     参数:
     root: 树的根节点
@@ -514,101 +577,51 @@ def plot_spiral_tree(root: SpiralNode, ax=None, color='blue', alpha=0.3, show=Tr
     color: 线条颜色
     alpha: 透明度
     show: 是否显示图形
-    show_numbers: 是否显示点的编号
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(10, 10))
     
-    def plot_node(node: SpiralNode, color_idx: int):
-        # 绘制当前节点的点链
-        points = node.points
-        for i in range(len(points) - 1):
-            x = [points[i].x, points[i+1].x]
-            y = [points[i].y, points[i+1].y]
-            ax.plot(x, y, color=plt.cm.viridis(color_idx/4), linewidth=2)
-            
-            # 在每个点上标注编号
-            if show_numbers:
-                ax.text(points[i].x, points[i].y, f'L{color_idx}_{i}', 
-                       bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
+    def plot_node(node: SpiralNode, parent_point=None):
+        if parent_point is not None:
+            ax.plot([parent_point.x, node.point.x], 
+                   [parent_point.y, node.point.y], 
+                   color=color, alpha=alpha)
+        ax.plot(node.point.x, node.point.y, 'o', color=color)
         
-        # 标注最后一个点
-        if points and show_numbers:
-            i = len(points) - 1
-            ax.text(points[i].x, points[i].y, f'L{color_idx}_{i}', 
-                   bbox=dict(facecolor='white', edgecolor='none', alpha=0.7))
-        
-        # 绘制到子节点的连接线
         for child in node.children:
-            if child.points:  # 确保子节点有点
-                # 绘制从当前节点最后一个点到子节点第一个点的连线
-                x = [points[-1].x, child.points[0].x]
-                y = [points[-1].y, child.points[0].y]
-                ax.plot(x, y, '--', color=plt.cm.viridis((color_idx+1)/4), linewidth=1.5)
-                
-                # 递归绘制子节点
-                plot_node(child, color_idx + 1)
+            plot_node(child, node.point)
     
-    plot_node(root, 0)
+    plot_node(root)
     ax.set_aspect('equal')
     ax.grid(True)
     
     if show:
-        plt.tight_layout()
         plt.show()
-    
-    return ax
+
 
 if __name__ == "__main__":
     # 创建8字形多边形
-    
-    # 使用原来的定义的多边形也可以测试
     width = 0.2
     points = [
         (0, 0), (2, 1), (0, 2), (-2, 3), (-1, 4),
         (0, 3), (2, 4), (3, 2), (2, 0), (0, -1),
         (-2, 0), (0, 0)
     ]
+    # 六边形
+    points = [(0, 0), (1, 0), (1, 1), (0.5, 1.5), (0, 1), (0, 0)]
     custom_polygon = Polygon(points)
     
-    # 对自定义多边形进行腐蚀演示
-    # plot_multiple_erosion_layers(custom_polygon, [width] * 5)
-    # point, edge_index = find_point_at_distance(custom_polygon, width)
-    # print(f"找到的点坐标: {point}")
-    # print(f"所在边的索引: {edge_index}")
-
-    # # plot it
-    # fig, ax = plt.subplots(figsize=(8, 8))
-    # quick_plot(custom_polygon, ax=ax, show=False)
-    # ax.plot(point.x, point.y, 'ro', markersize=10, label=f'Found point (edge {edge_index})')
-    # ax.legend()
-    # plt.show()
-
     # 创建一个内部多边形用于测试
-    # 改为腐蚀 0.2 得到的第一个多边形
+    inner_points = [(0.5, 1), (1, 1.5), (0.5, 2), (0, 1.5), (0.5, 1)]
+    inner_polygon = Polygon(inner_points)
+
     eroded_polygons = get_eroded_polygons(custom_polygon, width, 1)
     interior_polygon = eroded_polygons[1]
     
-    # 绘制结果
-    # fig, ax = plt.subplots(figsize=(10, 10))
-    # quick_plot(custom_polygon, color='blue', alpha=0.3, ax=ax, show=False, label='External')
-    
-    # # 绘制所有新创建的多边形
-    # colors = ['red', 'green', 'purple', 'orange']  # 为不同类型准备不同颜色
-    
-    # ax.legend()
-    # plt.show()
+    # 创建一个MultiPolygon用于测试
+    interior_polygon2 = Polygon([(1.5, 1.5), (2.5, 2), (2, 2.5), (1.5, 2), (1.5, 1.5)])
+    interior_multi = MultiPolygon([interior_polygon, interior_polygon2])
 
-    # # 创建一个MultiPolygon用于测试
-    # interior_polygon2 = Polygon([(1.5, 1.5), (2.5, 2), (2, 2.5), (1.5, 2), (1.5, 1.5)])
-    # interior_multi = MultiPolygon([interior_polygon, interior_polygon2])
-    
-    # # 测试新函数
-    # end_idx, pt1, polygon_infos = find_nearest_point_and_create_polygon(custom_polygon, interior_multi, width)
-    
-    # 测试盘旋树形图
-    spiral_root, final_end_idx = create_spiral_tree(custom_polygon, width)
-    
-    # 不显示编号的版本
-    plot_spiral_tree(spiral_root, show_numbers=False)
-    
+    # 测试盘旋树生成
+    root, ed_idx = generate_spiral_tree(custom_polygon, width)
+    visualize_spiral_tree(root)
