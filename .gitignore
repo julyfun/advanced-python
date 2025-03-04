@@ -4,3 +4,4 @@
 *.swp
 .zed
 __pycache__
+*.pem
