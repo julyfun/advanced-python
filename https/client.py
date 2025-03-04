@@ -2,7 +2,7 @@ import requests
 
 
 def make_request():
-    server_url = "https://127.0.0.1:4443"
+    server_url = "https://47.103.61.134:4443"
 
     try:
         # 警告：在生产环境中应该不使用 verify=False
