@@ -3,7 +3,7 @@ import ssl
 
 
 def run_server():
-    server_address = ("127.0.0.1", 4443)  # 设置 IP 和端口
+    server_address = ("0.0.0.0", 4443)  # 设置 IP 和端口
     handler = http.server.SimpleHTTPRequestHandler
 
     # 创建 HTTPS 服务器
