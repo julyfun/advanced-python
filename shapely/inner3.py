@@ -1,3 +1,4 @@
+# [deprecated]
 from shapely.geometry import Point, LineString, Polygon, MultiPolygon
 from shapely.ops import unary_union, nearest_points
 import numpy as np
@@ -38,7 +39,8 @@ def eroded_and_guarenteed_width(polygon: Polygon, width: float) -> List[Polygon]
     """
     对多边形进行向内腐蚀处理后，再进行一次开运算
     """
-    eroded_polygon = polygon.buffer(-width).buffer(-width / 2.0).buffer(width / 2.0)
+    cap = "square"
+    eroded_polygon = polygon.buffer(-width, cap_style=cap).buffer(-width / 2.0, cap_style=cap).buffer(width / 2.0, cap_style=cap)
 
     if eroded_polygon.is_empty or not eroded_polygon.is_valid:
         return []
