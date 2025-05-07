@@ -6,3 +6,7 @@
 __pycache__
 *.pem
 uploads
+.venv
+*.mp4
+*.wav
+ignore-*
