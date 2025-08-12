@@ -1,4 +1,5 @@
 import zarr
+import sys
 from rich.tree import Tree
 from rich import print
 
@@ -12,7 +13,7 @@ def build_tree(group, tree):
             shape = item.shape
             tree.add(f"{name} [green]{dtype}[/green] {shape}")
 
-store = zarr.DirectoryStore("/Volumes/JulyfunSSD/Downloads/replay_buffer.zarr")
+store = zarr.DirectoryStore(sys.argv[1])
 root = zarr.open(store, mode='r')
 tree = Tree("[bold]Zarr Store[/bold]")
 build_tree(root, tree)

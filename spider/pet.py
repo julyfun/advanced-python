@@ -153,7 +153,7 @@ def display_normalized_scores(scores, pet_names):
     # Display each pet with its score
     for pet, score in sorted_pets:
         # Create a simple bar visualization
-        bar = "█" * int(score * 20)
+        bar = "█" * int(score * 80)
         print(f"{pet:10}: {score:.4f} {bar}")
 
 
