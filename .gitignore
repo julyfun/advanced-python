@@ -10,3 +10,4 @@ uploads
 *.mp4
 *.wav
 ignore-*
+/torch/data
