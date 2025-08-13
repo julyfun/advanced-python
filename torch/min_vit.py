@@ -10,11 +10,6 @@ import math
 # CIFAR-10 classification with Vision Transformer and Data Augmentation
 # Vision Transformer (ViT) implementation for CIFAR-10 image classification
 # Uses patch-based attention mechanism instead of convolutional layers
-# Data augmentation techniques:
-# - RandomRotation: Rotates images by ±10 degrees to improve rotation invariance
-# - RandomAffine: Applies random translation (±10% in x,y) for position invariance
-# - RandomResizedCrop: Random crop and resize (80-100% scale) for scale invariance
-# - RandomHorizontalFlip: Horizontal flipping for better generalization
 
 class PatchEmbedding(nn.Module):
     """Split image into patches and embed them"""
@@ -28,6 +23,7 @@ class PatchEmbedding(nn.Module):
         
     def forward(self, x):
         # x: (batch_size, channels, height, width)
+
         x = self.projection(x)  # (batch_size, embed_dim, n_patches_sqrt, n_patches_sqrt)
         x = x.flatten(2)  # (batch_size, embed_dim, n_patches)
         x = x.transpose(1, 2)  # (batch_size, n_patches, embed_dim)
@@ -51,17 +47,20 @@ class MultiHeadAttention(nn.Module):
         # Generate Q, K, V
         qkv = self.qkv(x).reshape(batch_size, n_patches, 3, self.n_heads, self.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch_size, n_heads, n_patches, head_dim)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        q, k, v = qkv[0], qkv[1], qkv[2] # (batch_size, n_heads, n_patches, head_dim)
         
-        # Attention
+        # Attention. 每一个 patch 对另一个 patch 的注意力权重是一个标量.
+        # attn: (batch_size, n_heads, n_patches, n_patches)
         attn = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-        attn = attn.softmax(dim=-1)
+        attn = attn.softmax(dim=-1) # (batch_size, n_heads, n_patches, n_patches[softmax])
         attn = self.dropout(attn)
         
         # Apply attention to values
+        # attn @ v: (batch_size, n_heads, n_patches, head_dim)
+        #   .transpose(1, 2): (batch_size, n_patches, n_heads, head_dim)
         x = (attn @ v).transpose(1, 2).reshape(batch_size, n_patches, embed_dim)
         x = self.proj(x)
-        return x
+        return x # (batch_size, n_patches, embed_dim)
 
 class TransformerBlock(nn.Module):
     """Transformer encoder block"""
@@ -124,7 +123,7 @@ class VisionTransformer(nn.Module):
         # Patch embedding
         x = self.patch_embed(x)  # (batch_size, n_patches, embed_dim)
         
-        # Add class token
+        # Add class token (batch_size, 1, embed_dim)
         cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         x = torch.cat([cls_tokens, x], dim=1)  # (batch_size, n_patches + 1, embed_dim)
         
@@ -141,7 +140,31 @@ class VisionTransformer(nn.Module):
         cls_token_final = x[:, 0]  # Use class token for classification
         return self.head(cls_token_final)
 
-def main(load_checkpoint=None, save_checkpoint='vit_checkpoint.ckpt'):
+def export_to_onnx(model, onnx_path, img_size=224):
+    """Export trained model to ONNX format"""
+    model.eval()
+    
+    # Create dummy input
+    dummy_input = torch.randn(1, 3, img_size, img_size)
+    
+    # Export to ONNX
+    torch.onnx.export(
+        model,
+        dummy_input,
+        onnx_path,
+        export_params=True,
+        opset_version=11,
+        do_constant_folding=True,
+        input_names=['input'],
+        output_names=['output'],
+        dynamic_axes={
+            'input': {0: 'batch_size'},
+            'output': {0: 'batch_size'}
+        }
+    )
+    print(f'Model exported to ONNX: {onnx_path}')
+
+def main(load_checkpoint=None, save=None):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Data augmentation for training
@@ -241,22 +264,14 @@ def main(load_checkpoint=None, save_checkpoint='vit_checkpoint.ckpt'):
     
     accuracy = 100 * correct / total
     print(f'Test Accuracy: {accuracy:.2f}%')
-    
-    # [save]
-    if save_checkpoint:
-        checkpoint = {
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'test_accuracy': accuracy
-        }
-        torch.save(checkpoint, save_checkpoint)
-        print(f'Checkpoint saved to {save_checkpoint}')
+
+    if save:
+        export_to_onnx(model, save)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CIFAR-10 Classification with Vision Transformer')
     parser.add_argument('--load', type=str, help='Path to checkpoint to load')
-    parser.add_argument('--save', type=str, default='ignore-vit-checkpoint.ckpt', help='Path to save checkpoint')
+    parser.add_argument('--save', type=str, default='ignore-vit-model.onnx', help='Path to export ONNX model')
     args = parser.parse_args()
     
-    main(load_checkpoint=args.load, save_checkpoint=args.save)
+    main(load_checkpoint=args.load, save=args.save)
