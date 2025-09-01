@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import argparse
 from accelerate import Accelerator
-import os
 
 class SimpleNet(nn.Module):
     def __init__(self):
@@ -22,13 +21,15 @@ class SimpleNet(nn.Module):
         return self.fc(x)
 
 def train_model(model, train_loader, epochs, accelerator):
-    model.train()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters())
     
-    model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
+    model, optimizer, train_loader, criterion = accelerator.prepare(
+        model, optimizer, train_loader, criterion
+    )
     
     for epoch in range(epochs):
+        model.train()
         total_loss = 0
         for batch_idx, (data, target) in enumerate(train_loader):
             optimizer.zero_grad()
@@ -46,7 +47,7 @@ def evaluate_model(model, test_loader, accelerator):
     correct = 0
     total = 0
     
-    model, test_loader = accelerator.prepare(model, test_loader)
+    test_loader = accelerator.prepare(test_loader)
     
     with torch.no_grad():
         for data, target in test_loader:
@@ -55,8 +56,8 @@ def evaluate_model(model, test_loader, accelerator):
             total += target.size(0)
             correct += (predicted == target).sum().item()
     
-    total = accelerator.gather_for_metrics(torch.tensor(total))
-    correct = accelerator.gather_for_metrics(torch.tensor(correct))
+    correct = accelerator.gather_for_metrics(torch.tensor(correct, device=accelerator.device))
+    total = accelerator.gather_for_metrics(torch.tensor(total, device=accelerator.device))
     
     if accelerator.is_main_process:
         accuracy = 100 * correct.sum().item() / total.sum().item()
@@ -69,11 +70,7 @@ def main():
     parser.add_argument('--save', type=str, help='Save checkpoint path')
     parser.add_argument('--train', type=int, help='Number of training epochs')
     parser.add_argument('--eval', action='store_true', help='Evaluate on test set')
-    parser.add_argument('--num_processes', type=int, default=1, help='Number of GPUs to use')
     args = parser.parse_args()
-    
-    if args.num_processes > 1:
-        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, range(args.num_processes)))
     
     accelerator = Accelerator()
     
