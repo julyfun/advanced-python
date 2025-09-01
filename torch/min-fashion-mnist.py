@@ -4,8 +4,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import argparse
-from accelerate import Accelerator
-import os
 
 class SimpleNet(nn.Module):
     def __init__(self):
@@ -21,47 +19,40 @@ class SimpleNet(nn.Module):
         x = self.flatten(x)
         return self.fc(x)
 
-def train_model(model, train_loader, epochs, accelerator):
+def train_model(model, train_loader, epochs, device):
     model.train()
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters())
     
-    model, optimizer, train_loader = accelerator.prepare(model, optimizer, train_loader)
-    
     for epoch in range(epochs):
         total_loss = 0
         for batch_idx, (data, target) in enumerate(train_loader):
+            data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
             output = model(data)
             loss = criterion(output, target)
-            accelerator.backward(loss)
+            loss.backward()
             optimizer.step()
             total_loss += loss.item()
         
-        if accelerator.is_main_process:
-            print(f'Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}')
+        print(f'Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}')
 
-def evaluate_model(model, test_loader, accelerator):
+def evaluate_model(model, test_loader, device):
     model.eval()
     correct = 0
     total = 0
     
-    model, test_loader = accelerator.prepare(model, test_loader)
-    
     with torch.no_grad():
         for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
             output = model(data)
             _, predicted = torch.max(output.data, 1)
             total += target.size(0)
             correct += (predicted == target).sum().item()
     
-    total = accelerator.gather_for_metrics(torch.tensor(total))
-    correct = accelerator.gather_for_metrics(torch.tensor(correct))
-    
-    if accelerator.is_main_process:
-        accuracy = 100 * correct.sum().item() / total.sum().item()
-        print(f'Test Accuracy: {accuracy:.2f}%')
-        return accuracy
+    accuracy = 100 * correct / total
+    print(f'Test Accuracy: {accuracy:.2f}%')
+    return accuracy
 
 def main():
     parser = argparse.ArgumentParser()
@@ -69,42 +60,34 @@ def main():
     parser.add_argument('--save', type=str, help='Save checkpoint path')
     parser.add_argument('--train', type=int, help='Number of training epochs')
     parser.add_argument('--eval', action='store_true', help='Evaluate on test set')
-    parser.add_argument('--num_processes', type=int, default=1, help='Number of GPUs to use')
     args = parser.parse_args()
     
-    if args.num_processes > 1:
-        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, range(args.num_processes)))
-    
-    accelerator = Accelerator()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
     
-    model = SimpleNet()
+    model = SimpleNet().to(device)
     
     if args.load:
-        model.load_state_dict(torch.load(args.load, map_location='cpu'))
-        if accelerator.is_main_process:
-            print(f'Loaded model from {args.load}')
+        model.load_state_dict(torch.load(args.load, map_location=device))
+        print(f'Loaded model from {args.load}')
     
     if args.train:
         train_dataset = datasets.FashionMNIST('data', train=True, download=True, transform=transform)
         train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
-        train_model(model, train_loader, args.train, accelerator)
+        train_model(model, train_loader, args.train, device)
     
     if args.save:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        if accelerator.is_main_process:
-            torch.save(unwrapped_model.state_dict(), args.save)
-            print(f'Model saved to {args.save}')
+        torch.save(model.state_dict(), args.save)
+        print(f'Model saved to {args.save}')
     
     if args.eval:
         test_dataset = datasets.FashionMNIST('data', train=False, download=True, transform=transform)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-        evaluate_model(model, test_loader, accelerator)
+        evaluate_model(model, test_loader, device)
 
 if __name__ == '__main__':
     main()
