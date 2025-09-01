@@ -102,6 +102,9 @@ def main():
         test_dataset = datasets.FashionMNIST('data', train=False, download=True, transform=transform)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
         evaluate_model(model, test_loader, accelerator)
+    
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 if __name__ == '__main__':
     main()
