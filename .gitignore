@@ -11,3 +11,4 @@ uploads
 *.wav
 ignore-*
 /torch/data
+data
