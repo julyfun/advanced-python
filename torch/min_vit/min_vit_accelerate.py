@@ -1,3 +1,5 @@
+# accelerate launch min_vit_accelerate.py --train 1 --eval 
+# Epoch 1/1, Loss: 1.8571
 import torch
 import torch.nn as nn
 import torch.optim as optim

@@ -12,3 +12,4 @@ uploads
 ignore-*
 /torch/data
 data
+*.ckpt
