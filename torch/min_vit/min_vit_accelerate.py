@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 import argparse
 import math
+from tqdm import tqdm
 from accelerate import Accelerator
 
 class PatchEmbedding(nn.Module):
@@ -89,17 +90,18 @@ def train_model(model, train_loader, epochs, accelerator):
     model, optimizer, train_loader, criterion = accelerator.prepare(
         model, optimizer, train_loader, criterion
     )
-    
+
     for epoch in range(epochs):
         model.train()
         total_loss = 0
-        for batch_idx, (data, target) in enumerate(train_loader):
-            optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, target)
-            accelerator.backward(loss)
-            optimizer.step()
-            total_loss += loss.item()
+        with tqdm(train_loader, desc=f"Training Epoch {epoch}", leave=False) as tepoch:
+            for batch_idx, (data, target) in enumerate(tepoch):
+                optimizer.zero_grad()
+                output = model(data)
+                loss = criterion(output, target)
+                accelerator.backward(loss)
+                optimizer.step()
+                total_loss += loss.item()
         
         if accelerator.is_main_process:
             print(f'Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(train_loader):.4f}')
